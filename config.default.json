@@ -27,12 +27,20 @@
   },
 
   "entityResolution": {
-    "method": "exact",
-    "comment_phase3": "Phase 3 upgrades to conversational resolution (see GRAPH-PLUGIN-PLAN.md 3.2)",
+    "method": "conversational",
     "assumeThreshold": 0.8,
     "askThreshold": 0.4,
     "pendingMaxAgeDays": 30,
     "recencyBoostDays": 7,
     "cooccurrenceMinCount": 2
+  },
+
+  "llmExtraction": {
+    "model": "deepseek-v3.1:671b-cloud",
+    "ollamaHost": "localhost",
+    "ollamaPort": 11434,
+    "temperature": 0.3,
+    "maxTokens": 1000,
+    "timeoutMs": 45000
   }
 }
