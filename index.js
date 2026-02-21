@@ -98,6 +98,17 @@ module.exports = {
                     logger: api.logger
                 });
 
+                // Seed known entities from config (idempotent — upsert won't overwrite)
+                const seedEntities = config.entityResolution?.seedEntities || [];
+                for (const seed of seedEntities) {
+                    if (seed.name) {
+                        store.upsertEntity(seed.name, seed.type || 'CONCEPT', id);
+                    }
+                }
+                if (seedEntities.length > 0) {
+                    api.logger.info(`[Graph:${id}] Seeded ${seedEntities.length} known entit${seedEntities.length === 1 ? 'y' : 'ies'} from config`);
+                }
+
                 // Phase 5: Context builder + pattern discovery
                 const contextBuilder = new ContextBuilder(config.contextInjection);
                 const patternDiscovery = new PatternDiscovery(store, config.patternDiscovery);
@@ -277,6 +288,34 @@ module.exports = {
             });
 
             if (extraction.entities.length === 0) return;
+
+            // Resolve extracted entities to canonical names (assume-tier only)
+            if (config.entityResolution?.method !== 'exact') {
+                const contextNames = extraction.entities.map(e => e.name);
+                for (const entity of extraction.entities) {
+                    try {
+                        const resolved = state.resolver.resolve(entity.name, state.agentId, contextNames);
+                        if (resolved.tier === 'exact' && resolved.entity) {
+                            entity.name = resolved.entity.canonical_name;
+                        } else if (resolved.tier === 'assume' && resolved.entity) {
+                            entity.name = resolved.entity.canonical_name;
+                        }
+                    } catch { /* resolution failure is non-fatal */ }
+                }
+                // Also canonicalize triple subjects/objects
+                for (const triple of extraction.triples) {
+                    try {
+                        const subResolved = state.resolver.resolve(triple.subject, state.agentId, contextNames);
+                        if ((subResolved.tier === 'exact' || subResolved.tier === 'assume') && subResolved.entity) {
+                            triple.subject = subResolved.entity.canonical_name;
+                        }
+                        const objResolved = state.resolver.resolve(triple.object, state.agentId, contextNames);
+                        if ((objResolved.tier === 'exact' || objResolved.tier === 'assume') && objResolved.entity) {
+                            triple.object = objResolved.entity.canonical_name;
+                        }
+                    } catch { /* resolution failure is non-fatal */ }
+                }
+            }
 
             const sourceExchangeId = event.metadata?.exchangeId
                 || event.metadata?.sessionId
@@ -466,6 +505,16 @@ module.exports = {
                     Date.now() - state.lastPatternDiscovery > discoveryInterval) {
                     try {
                         state.lastPatternDiscovery = Date.now();
+
+                        // Decay stale triples before pattern evaluation
+                        const decayed = state.store.decayStaleTriples(state.agentId,
+                            config.storage?.confidenceHalfLifeDays || 90);
+                        if (decayed.changes > 0) {
+                            api.logger.info(
+                                `[Graph:${state.agentId}] Decayed confidence on ${decayed.changes} stale triple(s)`
+                            );
+                        }
+
                         const discovered = state.patternDiscovery.discover(state.agentId);
                         const validated = state.patternDiscovery.validatePatterns(state.agentId);
                         if (discovered.saved > 0 || validated.retired > 0) {

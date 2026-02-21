@@ -55,7 +55,8 @@
   "storage": {
     "dbFile": "graph.db",
     "maxTriplesPerEntity": 500,
-    "retentionDays": 365
+    "retentionDays": 365,
+    "confidenceHalfLifeDays": 90
   },
 
   "entityResolution": {
@@ -64,7 +65,8 @@
     "askThreshold": 0.4,
     "pendingMaxAgeDays": 30,
     "recencyBoostDays": 7,
-    "cooccurrenceMinCount": 2
+    "cooccurrenceMinCount": 2,
+    "seedEntities": []
   },
 
   "llmExtraction": {
