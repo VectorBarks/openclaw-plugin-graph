@@ -5,6 +5,7 @@
  * Phase 1: compromise.js NER + SQLite triples + single-hop link expansion.
  * Phase 3: LLM slow path + conversational entity resolution + metabolism/nightshift.
  * Phase 4: Archive backfill — build graph from historical conversations.
+ * Phase 5: Multi-hop traversal + meta-path patterns + graph-aware context injection.
  */
 
 const fs = require('fs');
@@ -14,6 +15,8 @@ const GraphSearcher = require('./lib/graph-searcher');
 const LLMExtractor = require('./lib/llm-extractor');
 const EntityResolver = require('./lib/entity-resolver');
 const ArchiveBackfill = require('./lib/backfill');
+const ContextBuilder = require('./lib/context-builder');
+const PatternDiscovery = require('./lib/pattern-discovery');
 const extractor = require('./lib/extractor');
 
 function deepMerge(target, source) {
@@ -95,15 +98,30 @@ module.exports = {
                     logger: api.logger
                 });
 
+                // Phase 5: Context builder + pattern discovery
+                const contextBuilder = new ContextBuilder(config.contextInjection);
+                const patternDiscovery = new PatternDiscovery(store, config.patternDiscovery);
+
+                // Seed static meta-path patterns from config
+                if (config.metaPaths?.static) {
+                    const seeded = store.seedStaticPatterns(id, config.metaPaths.static);
+                    if (seeded > 0) {
+                        api.logger.info(`[Graph:${id}] Seeded ${seeded} static meta-path pattern(s)`);
+                    }
+                }
+
                 states.set(id, {
                     agentId: id,
                     store,
                     searcher,
                     resolver,
                     backfill,
+                    contextBuilder,
+                    patternDiscovery,
                     enrichmentQueue: [],  // Exchanges queued for LLM slow path
                     isProcessing: false,
-                    backfillDone: false    // Flag: fast-path backfill completed
+                    backfillDone: false,       // Flag: fast-path backfill completed
+                    lastPatternDiscovery: 0    // Timestamp of last discovery run
                 });
                 api.logger.info(`[Graph] Initialized state for agent "${id}" — db: ${dbPath}`);
             }
@@ -186,8 +204,26 @@ module.exports = {
                 );
             }
 
-            // Phase 3: Check for ask-tier entity resolution notes
+            // Phase 5: Build graph context summaries
             const contextLines = [];
+            if (results.entities.length > 0 && config.contextInjection?.enabled !== false) {
+                try {
+                    const entityIds = results.entities.map(e => state.store.normalizeEntityId(e.name));
+                    const graphContext = state.contextBuilder.buildContext(entityIds, state.agentId, state.store);
+                    if (graphContext.length > 0) {
+                        contextLines.push('[GRAPH CONTEXT]');
+                        contextLines.push('You know these connections:');
+                        contextLines.push(...graphContext.map(line => `- ${line}`));
+                        api.logger.info(
+                            `[Graph:${state.agentId}] Injecting ${graphContext.length} context summary line(s)`
+                        );
+                    }
+                } catch (err) {
+                    api.logger.warn(`[Graph:${state.agentId}] Context builder failed: ${err.message}`);
+                }
+            }
+
+            // Phase 3: Check for ask-tier entity resolution notes
             if (results.entities.length > 0 && config.entityResolution?.method !== 'exact') {
                 try {
                     const askNotes = state.resolver.getAskNotes(results.entities, state.agentId);
@@ -422,6 +458,26 @@ module.exports = {
                     api.logger.info(
                         `[Graph:${state.agentId}] Emitted ${gaps.length} graph gap(s) to contemplation`
                     );
+                }
+
+                // 4. Phase 5: Pattern discovery + validation (gated to once per 24h)
+                const discoveryInterval = (config.patternDiscovery?.discoveryIntervalHours || 24) * 3600000;
+                if (config.patternDiscovery?.enabled !== false &&
+                    Date.now() - state.lastPatternDiscovery > discoveryInterval) {
+                    try {
+                        state.lastPatternDiscovery = Date.now();
+                        const discovered = state.patternDiscovery.discover(state.agentId);
+                        const validated = state.patternDiscovery.validatePatterns(state.agentId);
+                        if (discovered.saved > 0 || validated.retired > 0) {
+                            api.logger.info(
+                                `[Graph:${state.agentId}] Pattern discovery: ` +
+                                `${discovered.candidates} candidates → ${discovered.novel} novel → ${discovered.saved} saved. ` +
+                                `Validated: ${validated.validated} ok, ${validated.retired} retired`
+                            );
+                        }
+                    } catch (err) {
+                        api.logger.warn(`[Graph:${state.agentId}] Pattern discovery error: ${err.message}`);
+                    }
                 }
 
                 api.logger.info(
@@ -699,6 +755,19 @@ module.exports = {
             });
         });
 
-        api.logger.info('Graph plugin registered — entity extraction + link expansion + LLM enrichment + archive backfill active');
+        api.registerGatewayMethod('graph.getPatterns', async ({ params, respond }) => {
+            const state = getState(params?.agentId);
+            const patterns = state.store.getActivePatterns(state.agentId);
+            respond(true, { agentId: state.agentId, patterns });
+        });
+
+        api.registerGatewayMethod('graph.discoverPatterns', async ({ params, respond }) => {
+            const state = getState(params?.agentId);
+            const discovered = state.patternDiscovery.discover(state.agentId);
+            const validated = state.patternDiscovery.validatePatterns(state.agentId);
+            respond(true, { agentId: state.agentId, discovered, validated });
+        });
+
+        api.logger.info('Graph plugin registered — Phases 1-5: extraction + multi-hop traversal + meta-paths + context injection active');
     }
 };

@@ -14,10 +14,42 @@
   },
 
   "retrieval": {
-    "maxHops": 1,
+    "maxHops": 2,
     "maxResults": 20,
     "minSharedEntities": 1,
-    "cooccurrenceBoost": 0.1
+    "cooccurrenceBoost": 0.1,
+    "hopDecay": 0.7,
+    "minTraversalConfidence": 0.6,
+    "metaPathWeight": 0.8
+  },
+
+  "metaPaths": {
+    "static": [
+      { "predicates": ["interested_in", "interested_in"], "weight": 0.8 },
+      { "predicates": ["created", "part_of"], "weight": 0.9 },
+      { "predicates": ["knows", "works_on"], "weight": 0.85 },
+      { "predicates": ["uses", "created"], "weight": 0.7 },
+      { "predicates": ["works_on", "part_of"], "weight": 0.75 }
+    ]
+  },
+
+  "patternDiscovery": {
+    "enabled": true,
+    "maxActivePatterns": 12,
+    "maxStaticPatterns": 5,
+    "minYield": 3,
+    "maxOverlapRatio": 0.9,
+    "maxFanoutPerStep": 50,
+    "maxCandidateLength": 3,
+    "discoveryIntervalHours": 24
+  },
+
+  "contextInjection": {
+    "enabled": true,
+    "maxLines": 5,
+    "minConfidence": 0.6,
+    "minMentionCount": 2,
+    "excludePredicates": ["related_to"]
   },
 
   "storage": {
