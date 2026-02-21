@@ -3,5 +3,45 @@
   "name": "Knowledge Graph",
   "version": "0.1.0",
   "description": "Entity extraction, triple storage, and graph-based retrieval for OpenClaw agents",
-  "main": "index.js"
+  "main": "index.js",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable or disable the graph plugin"
+      },
+      "extraction": {
+        "type": "object",
+        "description": "Entity extraction settings",
+        "properties": {
+          "minExchangeLength": { "type": "number", "default": 20 },
+          "skipHeartbeats": { "type": "boolean", "default": true },
+          "maxEntitiesPerExchange": { "type": "number", "default": 15 },
+          "confidenceThreshold": { "type": "number", "default": 0.5 }
+        }
+      },
+      "retrieval": {
+        "type": "object",
+        "description": "Graph search settings",
+        "properties": {
+          "maxHops": { "type": "number", "default": 1 },
+          "maxResults": { "type": "number", "default": 20 },
+          "minSharedEntities": { "type": "number", "default": 1 },
+          "cooccurrenceBoost": { "type": "number", "default": 0.1 }
+        }
+      },
+      "storage": {
+        "type": "object",
+        "description": "Graph storage settings",
+        "properties": {
+          "dbFile": { "type": "string", "default": "graph.db" },
+          "maxTriplesPerEntity": { "type": "number", "default": 500 },
+          "retentionDays": { "type": "number", "default": 365 }
+        }
+      }
+    }
+  }
 }
