@@ -4,6 +4,7 @@
  * Entity extraction, triple storage, and graph-based retrieval for OpenClaw agents.
  * Phase 1: compromise.js NER + SQLite triples + single-hop link expansion.
  * Phase 3: LLM slow path + conversational entity resolution + metabolism/nightshift.
+ * Phase 4: Archive backfill — build graph from historical conversations.
  */
 
 const fs = require('fs');
@@ -12,6 +13,7 @@ const GraphStore = require('./lib/graph-store');
 const GraphSearcher = require('./lib/graph-searcher');
 const LLMExtractor = require('./lib/llm-extractor');
 const EntityResolver = require('./lib/entity-resolver');
+const ArchiveBackfill = require('./lib/backfill');
 const extractor = require('./lib/extractor');
 
 function deepMerge(target, source) {
@@ -59,6 +61,11 @@ module.exports = {
         // Per-agent state: { store, searcher, resolver, enrichmentQueue }
         const states = new Map();
 
+        // Resolve continuity plugin data directory (sibling plugin)
+        const continuityBaseDir = config.backfill?.continuityDir
+            ? path.resolve(__dirname, config.backfill.continuityDir)
+            : path.join(__dirname, '..', 'openclaw-plugin-continuity', 'data');
+
         function getState(agentId) {
             const id = agentId || 'main';
             if (!states.has(id)) {
@@ -73,13 +80,30 @@ module.exports = {
                 const searcher = new GraphSearcher(store, config.retrieval);
                 const resolver = new EntityResolver(store, config.entityResolution);
 
+                // Resolve continuity archive dir for this agent
+                const archiveDir = id === 'main'
+                    ? path.join(continuityBaseDir, 'archive')
+                    : path.join(continuityBaseDir, 'agents', id, 'archive');
+
+                const backfill = new ArchiveBackfill({
+                    store,
+                    extractor,
+                    extractionConfig: config.extraction,
+                    agentId: id,
+                    archiveDir,
+                    dataDir: dbDir,
+                    logger: api.logger
+                });
+
                 states.set(id, {
                     agentId: id,
                     store,
                     searcher,
                     resolver,
+                    backfill,
                     enrichmentQueue: [],  // Exchanges queued for LLM slow path
-                    isProcessing: false
+                    isProcessing: false,
+                    backfillDone: false    // Flag: fast-path backfill completed
                 });
                 api.logger.info(`[Graph] Initialized state for agent "${id}" — db: ${dbPath}`);
             }
@@ -110,6 +134,28 @@ module.exports = {
 
         api.on('before_agent_start', async (event, ctx) => {
             const state = getState(ctx.agentId);
+
+            // Phase 4: Lazy archive backfill — run on first conversation
+            if (!state.backfillDone) {
+                state.backfillDone = true;
+                try {
+                    const status = state.backfill.checkStatus();
+                    if (status.needed) {
+                        api.logger.info(
+                            `[Graph:${state.agentId}] Starting archive backfill — ` +
+                            `${status.unprocessed} unprocessed dates from ${status.available} total`
+                        );
+                        const result = state.backfill.processAll();
+                        api.logger.info(
+                            `[Graph:${state.agentId}] Backfill complete — ` +
+                            `${result.processed} dates, ${result.entities} entities, ` +
+                            `${result.triples} triples in ${result.duration}ms`
+                        );
+                    }
+                } catch (err) {
+                    api.logger.warn(`[Graph:${state.agentId}] Backfill failed: ${err.message}`);
+                }
+            }
 
             // Get user query from event
             const messages = event.messages || [];
@@ -343,6 +389,19 @@ module.exports = {
             global.__ocNightshift.registerTaskRunner('graph-enrichment', async (task, ctx) => {
                 const state = getState(ctx.agentId);
 
+                // 0. Phase 4: Incremental backfill — check for new archive dates
+                try {
+                    const backfillResult = state.backfill.processBatch(5);
+                    if (backfillResult.processed > 0) {
+                        api.logger.info(
+                            `[Graph:${state.agentId}] Nightshift backfill: ${backfillResult.processed} dates, ` +
+                            `${backfillResult.triples} triples, ${backfillResult.remaining} remaining`
+                        );
+                    }
+                } catch (err) {
+                    api.logger.warn(`[Graph:${state.agentId}] Nightshift backfill error: ${err.message}`);
+                }
+
                 // 1. Process queued exchanges through LLM extractor
                 const enriched = await processEnrichmentQueue(state, 3);
 
@@ -371,7 +430,9 @@ module.exports = {
                 );
 
                 // Re-queue if there's more work
-                if (state.enrichmentQueue.length > 0) {
+                const hasMore = state.enrichmentQueue.length > 0
+                    || state.backfill.getUnprocessedDates().length > 0;
+                if (hasMore) {
                     global.__ocNightshift.queueTask(state.agentId, {
                         type: 'graph-enrichment',
                         priority: 35
@@ -602,6 +663,42 @@ module.exports = {
             respond(true, result);
         });
 
-        api.logger.info('Graph plugin registered — entity extraction + link expansion + LLM enrichment active');
+        api.registerGatewayMethod('graph.backfillStatus', async ({ params, respond }) => {
+            const state = getState(params?.agentId);
+            const status = state.backfill.checkStatus();
+            const processed = state.backfill.getProcessedDates();
+            respond(true, {
+                agentId: state.agentId,
+                ...status,
+                processedDates: processed.size,
+                backfillDone: state.backfillDone
+            });
+        });
+
+        api.registerGatewayMethod('graph.rebuild', async ({ params, respond }) => {
+            const state = getState(params?.agentId);
+            api.logger.info(`[Graph:${state.agentId}] Rebuild requested — clearing graph and re-extracting`);
+
+            // 1. Reset graph and backfill log
+            const cleared = state.backfill.reset();
+            api.logger.info(
+                `[Graph:${state.agentId}] Cleared ${cleared.triplesDeleted} triples, ${cleared.entitiesDeleted} entities`
+            );
+
+            // 2. Re-run fast-path backfill
+            const result = state.backfill.processAll();
+            api.logger.info(
+                `[Graph:${state.agentId}] Rebuild complete — ${result.processed} dates, ` +
+                `${result.entities} entities, ${result.triples} triples in ${result.duration}ms`
+            );
+
+            respond(true, {
+                agentId: state.agentId,
+                cleared,
+                rebuilt: result
+            });
+        });
+
+        api.logger.info('Graph plugin registered — entity extraction + link expansion + LLM enrichment + archive backfill active');
     }
 };

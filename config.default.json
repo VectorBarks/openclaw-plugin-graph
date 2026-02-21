@@ -42,5 +42,10 @@
     "temperature": 0.3,
     "maxTokens": 1000,
     "timeoutMs": 45000
+  },
+
+  "backfill": {
+    "enabled": true,
+    "continuityDir": "../openclaw-plugin-continuity/data"
   }
 }
