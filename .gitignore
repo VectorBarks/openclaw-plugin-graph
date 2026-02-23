@@ -1,5 +1,28 @@
-node_modules/
+# Local config — contains private paths, model names, endpoints
+config.json
+
+# Runtime data — conversation history, growth vectors, entities, logs
 data/
+*.log
+
+# Secrets and environment
+.env
+.env.*
+*.key
+*.secret
+*credentials*
+*api_key*
+
+# Node
+node_modules/
+package-lock.json
+
+# macOS
+.DS_Store
+
+# Database files
 *.db
-*.db-wal
 *.db-shm
+*.db-wal
+*.sqlite
+
