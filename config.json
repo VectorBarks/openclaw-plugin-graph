@@ -1,0 +1,118 @@
+{
+  "enabled": true,
+  "extraction": {
+    "minExchangeLength": 20,
+    "skipHeartbeats": true,
+    "maxEntitiesPerExchange": 15,
+    "confidenceThreshold": 0.5,
+    "canonicalPredicates": [
+      "knows",
+      "created",
+      "uses",
+      "located_in",
+      "part_of",
+      "interested_in",
+      "prefers",
+      "works_on",
+      "related_to",
+      "has_property",
+      "occurred_at",
+      "causes"
+    ]
+  },
+  "retrieval": {
+    "maxHops": 2,
+    "maxResults": 20,
+    "minSharedEntities": 1,
+    "cooccurrenceBoost": 0.1,
+    "hopDecay": 0.7,
+    "minTraversalConfidence": 0.6,
+    "metaPathWeight": 0.8
+  },
+  "metaPaths": {
+    "static": [
+      {
+        "predicates": [
+          "interested_in",
+          "interested_in"
+        ],
+        "weight": 0.8
+      },
+      {
+        "predicates": [
+          "created",
+          "part_of"
+        ],
+        "weight": 0.9
+      },
+      {
+        "predicates": [
+          "knows",
+          "works_on"
+        ],
+        "weight": 0.85
+      },
+      {
+        "predicates": [
+          "uses",
+          "created"
+        ],
+        "weight": 0.7
+      },
+      {
+        "predicates": [
+          "works_on",
+          "part_of"
+        ],
+        "weight": 0.75
+      }
+    ]
+  },
+  "patternDiscovery": {
+    "enabled": true,
+    "maxActivePatterns": 12,
+    "maxStaticPatterns": 5,
+    "minYield": 3,
+    "maxOverlapRatio": 0.9,
+    "maxFanoutPerStep": 50,
+    "maxCandidateLength": 3,
+    "discoveryIntervalHours": 24
+  },
+  "contextInjection": {
+    "enabled": true,
+    "maxLines": 5,
+    "minConfidence": 0.6,
+    "minMentionCount": 2,
+    "excludePredicates": [
+      "related_to"
+    ]
+  },
+  "storage": {
+    "dbFile": "graph.db",
+    "maxTriplesPerEntity": 500,
+    "retentionDays": 365,
+    "confidenceHalfLifeDays": 90
+  },
+  "entityResolution": {
+    "method": "conversational",
+    "assumeThreshold": 0.8,
+    "askThreshold": 0.4,
+    "pendingMaxAgeDays": 30,
+    "recencyBoostDays": 7,
+    "cooccurrenceMinCount": 2,
+    "seedEntities": []
+  },
+  "llmExtraction": {
+    "model": "/Users/saphira/mlx-models/GLM-4.7-Flash-MLX-4bit",
+    "ollamaHost": "localhost",
+    "ollamaPort": 8080,
+    "temperature": 0.3,
+    "maxTokens": 2000,
+    "timeoutMs": 45000,
+    "max_tokens": 2000
+  },
+  "backfill": {
+    "enabled": true,
+    "continuityDir": "/Users/saphira/.openclaw/plugins/continuity/data"
+  }
+}
