@@ -322,6 +322,16 @@ module.exports = {
                 || `exchange_${Date.now()}`;
             const sourceDate = new Date().toISOString().split('T')[0];
 
+            // Generate triples from cooccurrences if no explicit triples were extracted
+            if (extraction.triples.length === 0 && extraction.cooccurrences && extraction.cooccurrences.length > 0) {
+                extraction.triples = extraction.cooccurrences.map(co => ({
+                    subject: co.entityA || co.a,
+                    predicate: 'related_to',
+                    object: co.entityB || co.b,
+                    confidence: 0.5
+                }));
+            }
+
             // Write to graph store
             try {
                 const tripleIds = state.store.writeExchange({
