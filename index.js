@@ -562,7 +562,7 @@ module.exports = {
         // Phase 3: Queue nightshift tasks on heartbeat if work is pending
         // -----------------------------------------------------------------
 
-        api.on('heartbeat', async (event, ctx) => {
+        api.on('agent_end', async (event, ctx) => {
             const state = getState(ctx.agentId);
             if (state.enrichmentQueue.length > 0 && global.__ocNightshift?.queueTask) {
                 global.__ocNightshift.queueTask(state.agentId, {
