@@ -34,7 +34,9 @@ function deepMerge(target, source) {
 
 function loadConfig(userConfig) {
     const defaults = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.default.json'), 'utf8'));
-    return deepMerge(defaults, userConfig || {});
+    let localConfig = {};
+    try { localConfig = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')); } catch(e) {}
+    return deepMerge(deepMerge(defaults, localConfig), userConfig || {});
 }
 
 function ensureDir(dirPath) {
