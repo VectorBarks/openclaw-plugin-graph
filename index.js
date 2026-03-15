@@ -587,6 +587,13 @@ module.exports = {
          * - Entities connected only by related_to (no specific predicates)
          * - Temporal dead zones (entity not mentioned in 30+ days)
          */
+        // Entities that are well-known in context — no need to investigate
+        const GRAPH_GAP_BLACKLIST = new Set([
+            'fuchs', 'vector', 'saphira', 'claude', 'openclaw', 'telegram',
+            'google', 'github', 'todoist', 'clement', 'berlin', 'tahiti',
+            'api', 'llm', 'response', 'null', 'undefined', 'true', 'false'
+        ]);
+
         function detectGraphGaps(state) {
             const gaps = [];
             const agentId = state.agentId;
@@ -606,6 +613,7 @@ module.exports = {
                 `).all(agentId, agentId);
 
                 for (const e of popular) {
+                    if (GRAPH_GAP_BLACKLIST.has(e.canonical_name.toLowerCase())) continue;
                     gaps.push({
                         question: `What do we actually know about ${e.canonical_name}? It's been mentioned ${e.mention_count} times but has very few recorded relationships.`,
                         type: 'under_connected',
@@ -634,6 +642,7 @@ module.exports = {
                 `).all(agentId, agentId, agentId);
 
                 for (const e of genericOnly) {
+                    if (GRAPH_GAP_BLACKLIST.has(e.canonical_name.toLowerCase())) continue;
                     gaps.push({
                         question: `How specifically is ${e.canonical_name} connected to other things we know about? We only have generic associations so far.`,
                         type: 'generic_only',
