@@ -190,7 +190,19 @@ module.exports = {
 
             // Get user query from event
             const messages = event.messages || [];
-            const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+            let lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+
+            // Fallback: OpenClaw 2026.3.13+ passes user text as event.prompt
+            if (!lastUserMsg && event.prompt) {
+                const promptText = typeof event.prompt === 'string'
+                    ? event.prompt
+                    : Array.isArray(event.prompt)
+                        ? event.prompt.map(p => p?.text || '').join(' ')
+                        : '';
+                if (promptText) {
+                    lastUserMsg = { role: 'user', content: promptText };
+                }
+            }
             if (!lastUserMsg) return {};
 
             const queryText = extractor.normalizeText(lastUserMsg);
