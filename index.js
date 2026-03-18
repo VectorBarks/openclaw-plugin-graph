@@ -73,7 +73,10 @@ module.exports = {
             : path.join(__dirname, '..', 'openclaw-plugin-continuity', 'data');
 
         function getState(agentId) {
-            const id = agentId || 'main';
+            const rawId = agentId || 'main';
+            // Agent alias mapping: redirect saphira-opus to saphira graph
+            const agentAliases = config.agentAliases || {};
+            const id = agentAliases[rawId] || rawId;
             if (!states.has(id)) {
                 // Resolve DB path per agent
                 const dbDir = id === 'main'
