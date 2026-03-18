@@ -841,7 +841,12 @@ module.exports = {
 
         api.registerGatewayMethod('graph.rebuild', async ({ params, respond }) => {
             const state = getState(params?.agentId);
-            api.logger.info(`[Graph:${state.agentId}] Rebuild requested — clearing graph and re-extracting`);
+            const useLLM = params?.useLLM !== false; // default: true (use Haiku)
+            const batchSize = params?.batchSize || 5; // archive dates per batch
+            const maxExchangesPerDate = params?.maxExchangesPerDate || 50;
+            const method = useLLM ? 'LLM (Haiku)' : 'regex fast-path';
+
+            api.logger.info(`[Graph:${state.agentId}] Rebuild requested via ${method} — clearing graph and re-extracting`);
 
             // 1. Reset graph and backfill log
             const cleared = state.backfill.reset();
@@ -849,18 +854,135 @@ module.exports = {
                 `[Graph:${state.agentId}] Cleared ${cleared.triplesDeleted} triples, ${cleared.entitiesDeleted} entities`
             );
 
-            // 2. Re-run fast-path backfill
-            const result = state.backfill.processAll();
-            api.logger.info(
-                `[Graph:${state.agentId}] Rebuild complete — ${result.processed} dates, ` +
-                `${result.entities} entities, ${result.triples} triples in ${result.duration}ms`
-            );
+            if (!useLLM) {
+                // Legacy fast-path rebuild (regex/compromise.js)
+                const result = state.backfill.processAll();
+                api.logger.info(
+                    `[Graph:${state.agentId}] Fast-path rebuild complete — ${result.processed} dates, ` +
+                    `${result.entities} entities, ${result.triples} triples in ${result.duration}ms`
+                );
+                respond(true, { agentId: state.agentId, cleared, rebuilt: result });
+                return;
+            }
 
+            // 2. LLM rebuild: iterate archive dates, extract via Haiku
+            const start = Date.now();
+            const allDates = state.backfill.getAvailableDates();
+            let totalEntities = 0;
+            let totalTriples = 0;
+            let totalExchanges = 0;
+            let errors = 0;
+
+            // Send early response since LLM rebuild is async and long-running
+            // Process in background, respond with status
             respond(true, {
                 agentId: state.agentId,
                 cleared,
-                rebuilt: result
+                status: 'running',
+                method: 'llm',
+                totalDates: allDates.length,
+                message: `Rebuild started via ${method} for ${allDates.length} archive dates. Check graph.getState for progress.`
             });
+
+            // Process all dates sequentially (async, after respond)
+            for (const date of allDates) {
+                try {
+                    const archive = state.backfill._loadArchive(date);
+                    if (!archive || !archive.messages || archive.messages.length === 0) {
+                        state.backfill._markProcessed(date);
+                        continue;
+                    }
+
+                    const exchanges = state.backfill._pairExchanges(archive.messages);
+                    let dateEntities = 0;
+                    let dateTriples = 0;
+
+                    for (let i = 0; i < Math.min(exchanges.length, maxExchangesPerDate); i++) {
+                        const exchange = exchanges[i];
+                        const userText = exchange.user?.text || '';
+                        const agentText = exchange.agent?.text || '';
+
+                        // Skip very short exchanges
+                        if ((userText.length + agentText.length) < 30) continue;
+
+                        // Skip heartbeats, system messages, subagent contexts
+                        if (/HEARTBEAT|heartbeat/i.test(userText)) continue;
+                        if (/^\[Subagent Context\]/i.test(userText)) continue;
+                        if (/^OpenClaw runtime context/i.test(userText)) continue;
+
+                        try {
+                            const result = await llmExtractor.extract(userText, agentText);
+                            if (result.entities.length === 0 && result.relationships.length === 0) continue;
+
+                            const exchangeId = `exchange_${date}_${i}`;
+
+                            // Write entities
+                            for (const entity of result.entities) {
+                                state.store.upsertEntity(entity.name, entity.type, state.agentId);
+                                // Store aliases
+                                if (entity.aliases && entity.aliases.length > 0) {
+                                    const entityId = state.store.normalizeEntityId(entity.name);
+                                    const existing = state.store.getEntity(entityId);
+                                    if (existing) {
+                                        let currentAliases = [];
+                                        try { currentAliases = JSON.parse(existing.aliases || '[]'); } catch { /* */ }
+                                        const merged = [...new Set([...currentAliases, ...entity.aliases])];
+                                        state.store.db.prepare(
+                                            'UPDATE entities SET aliases = ? WHERE id = ?'
+                                        ).run(JSON.stringify(merged), entityId);
+                                    }
+                                }
+                            }
+
+                            // Write relationships as triples
+                            for (const rel of result.relationships) {
+                                try {
+                                    state.store.addTriple({
+                                        subject: rel.subject,
+                                        predicate: rel.predicate,
+                                        object: rel.object,
+                                        confidence: rel.confidence || 0.8,
+                                        sourceExchangeId: exchangeId,
+                                        sourceDate: date,
+                                        agentId: state.agentId,
+                                        pendingResolution: false
+                                    });
+                                    dateTriples++;
+                                } catch { /* duplicate or constraint — skip */ }
+                            }
+
+                            dateEntities += result.entities.length;
+                            totalExchanges++;
+                        } catch (err) {
+                            errors++;
+                            if (errors <= 5) {
+                                api.logger.warn(`[Graph:${state.agentId}] LLM extract error on ${date}/${i}: ${err.message}`);
+                            }
+                        }
+                    }
+
+                    totalEntities += dateEntities;
+                    totalTriples += dateTriples;
+                    state.backfill._markProcessed(date);
+
+                    if (dateEntities > 0) {
+                        api.logger.debug(
+                            `[Graph:${state.agentId}] Rebuild ${date}: ${dateEntities} entities, ${dateTriples} triples`
+                        );
+                    }
+                } catch (err) {
+                    errors++;
+                    api.logger.warn(`[Graph:${state.agentId}] Rebuild date ${date} failed: ${err.message}`);
+                    state.backfill._markProcessed(date); // mark to avoid retrying bad dates
+                }
+            }
+
+            const duration = Date.now() - start;
+            api.logger.info(
+                `[Graph:${state.agentId}] LLM rebuild complete — ${allDates.length} dates, ` +
+                `${totalExchanges} exchanges, ${totalEntities} entities, ${totalTriples} triples, ` +
+                `${errors} errors in ${duration}ms`
+            );
         });
 
         api.registerGatewayMethod('graph.getPatterns', async ({ params, respond }) => {
