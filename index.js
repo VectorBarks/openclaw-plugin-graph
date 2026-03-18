@@ -62,6 +62,7 @@ module.exports = {
 
         // Shared LLM extractor (one instance, stateless)
         const llmExtractor = new LLMExtractor(config.llmExtraction);
+        llmExtractor.setLogger(api.logger);
 
         // Per-agent state: { store, searcher, resolver, enrichmentQueue }
         const states = new Map();
@@ -137,6 +138,9 @@ module.exports = {
                     lastPatternDiscovery: 0    // Timestamp of last discovery run
                 });
                 api.logger.info(`[Graph] Initialized state for agent "${id}" — db: ${dbPath}`);
+
+                // Phase 6: Check failed-extraction queue on startup
+                llmExtractor.checkFailedQueueOnStartup(id);
             }
             return states.get(id);
         }
@@ -435,7 +439,10 @@ module.exports = {
 
             for (const item of batch) {
                 try {
-                    const result = await llmExtractor.extract(item.userText, item.agentText);
+                    const result = await llmExtractor.extractWithFailedQueue(
+                        item.userText, item.agentText,
+                        item.exchangeId, state.agentId, item.date
+                    );
                     if (result.entities.length === 0 && result.relationships.length === 0) continue;
 
                     // Write LLM-extracted entities with alias tracking
@@ -997,6 +1004,83 @@ module.exports = {
             const validated = state.patternDiscovery.validatePatterns(state.agentId);
             respond(true, { agentId: state.agentId, discovered, validated });
         });
+
+        // Phase 6: Retry failed extractions from the persistent queue
+        api.registerGatewayMethod('graph.retryFailed', async ({ params, respond }) => {
+            const agentId = params?.agentId;
+            const state = getState(agentId);
+            const queue = llmExtractor.readFailedQueue(state.agentId);
+
+            if (queue.length === 0) {
+                respond(true, { agentId: state.agentId, status: 'empty', retried: 0, succeeded: 0, remaining: 0 });
+                return;
+            }
+
+            const maxRetry = params?.limit || queue.length;
+            const batch = queue.slice(0, maxRetry);
+            const succeededIds = [];
+            let failed = 0;
+
+            for (const entry of batch) {
+                try {
+                    // Re-extract — extractWithFailedQueue would re-append on failure,
+                    // so use plain extract() here to avoid duplicates
+                    const result = await llmExtractor.extract(
+                        entry.userTextPreview || '',  // Only preview available
+                        ''  // Agent text not stored in failed queue
+                    );
+
+                    if (result.entities.length > 0 || result.relationships.length > 0) {
+                        // Write entities
+                        for (const entity of result.entities) {
+                            state.store.upsertEntity(entity.name, entity.type, state.agentId);
+                        }
+                        // Write relationships
+                        for (const rel of result.relationships) {
+                            try {
+                                state.store.addTriple({
+                                    subject: rel.subject,
+                                    predicate: rel.predicate,
+                                    object: rel.object,
+                                    confidence: rel.confidence || 0.8,
+                                    sourceExchangeId: entry.exchangeId,
+                                    sourceDate: entry.date,
+                                    agentId: state.agentId,
+                                    pendingResolution: false
+                                });
+                            } catch { /* duplicate or constraint */ }
+                        }
+                    }
+
+                    succeededIds.push(entry.exchangeId);
+                    api.logger.info(`[Graph:${state.agentId}] Retry succeeded for ${entry.exchangeId}`);
+                } catch (err) {
+                    failed++;
+                    api.logger.warn(`[Graph:${state.agentId}] Retry still failing for ${entry.exchangeId}: ${err.message}`);
+                }
+            }
+
+            // Remove succeeded entries from queue
+            if (succeededIds.length > 0) {
+                llmExtractor.removeFromFailedQueue(state.agentId, succeededIds);
+            }
+
+            const remaining = queue.length - succeededIds.length;
+            respond(true, {
+                agentId: state.agentId,
+                status: 'done',
+                retried: batch.length,
+                succeeded: succeededIds.length,
+                failed,
+                remaining
+            });
+        });
+
+        // Phase 6: Check for api.registerCron availability
+        // NOTE: api.registerCron is NOT available in OpenClaw's plugin API.
+        // Use an external OpenClaw cron instead:
+        //   openclaw cron add --name "graph-retry-failed" --schedule "0 6 * * *"
+        //     --command 'openclaw gateway call graph.retryFailed --params "{\"agentId\":\"saphira\"}"'
 
         api.logger.info('Graph plugin registered — Phases 1-5: extraction + multi-hop traversal + meta-paths + context injection active');
     }
