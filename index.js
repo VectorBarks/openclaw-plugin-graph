@@ -274,10 +274,36 @@ module.exports = {
         // HOOK: agent_end — Extract entities + triples from conversation
         // -----------------------------------------------------------------
 
+        /**
+         * Check if this is a real user conversation (telegram/webchat).
+         * Filters out subagent sessions, cron workers, inter-session messages.
+         * Same logic as nightshift's isUserSession().
+         */
+        function isUserSession(ctx, event) {
+            // Inter-session messages (cron workers, sub-agents forwarding)
+            if (ctx?.sourceSession) return false;
+
+            // Heartbeat prompts
+            const prompt = typeof event?.prompt === 'string' ? event.prompt : '';
+            if (/heartbeat|HEARTBEAT/i.test(prompt)) return false;
+
+            // Only telegram/webchat sessions produce real user knowledge
+            const key = ctx?.sessionKey || '';
+            if (key.includes('cron:') || key.includes('subagent:')) return false;
+
+            return key.includes('telegram') || key.includes('webchat');
+        }
+
         api.on('agent_end', async (event, ctx) => {
             // Skip heartbeats
             if (event.metadata?.isHeartbeat) return;
             if (config.extraction?.skipHeartbeats && event.metadata?.isHeartbeat) return;
+
+            // ── SESSION FILTER: Only extract from real user conversations ──
+            if (!isUserSession(ctx, event)) {
+                api.logger.debug(`[Graph:${ctx.agentId}] Skipping non-user session: ${ctx?.sessionKey || 'unknown'}`);
+                return;
+            }
 
             const messages = event.messages || [];
             if (messages.length === 0) return;
