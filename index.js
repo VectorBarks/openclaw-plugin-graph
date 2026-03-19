@@ -36,7 +36,9 @@ function loadConfig(userConfig) {
     const defaults = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.default.json'), 'utf8'));
     let localConfig = {};
     try { localConfig = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8')); } catch(e) {}
-    return deepMerge(deepMerge(defaults, localConfig), userConfig || {});
+    let localOverrides = {};
+    try { localOverrides = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.local.json'), 'utf8')); } catch(e) {}
+    return deepMerge(deepMerge(deepMerge(defaults, localConfig), localOverrides), userConfig || {});
 }
 
 function ensureDir(dirPath) {

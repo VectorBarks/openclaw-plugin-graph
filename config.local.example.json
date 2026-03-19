@@ -1,0 +1,9 @@
+{
+  "_comment": "Private overrides for graph plugin. Copy to config.local.json and customize.",
+  "extraction": {
+    "enabled": true
+  },
+  "storage": {
+    "continuityDir": "/path/to/your/continuity/data"
+  }
+}
