@@ -477,11 +477,17 @@ module.exports = {
                         // Determine pending status
                         const pending = subjectRes.tier === 'defer' || objectRes.tier === 'defer';
 
+                        // Per-predicate confidence threshold filtering
+                        const boostedConfidence = Math.min(rel.confidence + 0.1, 1.0);
+                        const predThresholds = config.extraction?.predicateThresholds || {};
+                        const predThreshold = predThresholds[rel.predicate] ?? config.extraction?.confidenceThreshold ?? 0.7;
+                        if (boostedConfidence < predThreshold) continue;
+
                         state.store.addTriple({
                             subject: rel.subject,
                             predicate: rel.predicate,
                             object: rel.object,
-                            confidence: Math.min(rel.confidence + 0.1, 1.0), // LLM boost
+                            confidence: boostedConfidence, // LLM boost
                             sourceExchangeId: item.exchangeId,
                             sourceDate: item.date,
                             agentId: state.agentId,
@@ -1079,6 +1085,21 @@ module.exports = {
                 failed,
                 remaining
             });
+        });
+
+        api.registerGatewayMethod('graph.cleanupExpiredTriples', async ({ params, respond }) => {
+            const agentId = params?.agentId;
+            const state = getState(agentId);
+            const ttlConfig = config.extraction?.predicateTTLDays || {};
+
+            if (Object.keys(ttlConfig).length === 0) {
+                respond(true, { agentId: state.agentId, status: 'no_ttl_configured', deleted: 0 });
+                return;
+            }
+
+            const result = state.store.cleanupExpiredTriples(state.agentId, ttlConfig);
+            api.logger.info(`[Graph:${state.agentId}] TTL cleanup: ${result.deleted} triples deleted`);
+            respond(true, { agentId: state.agentId, status: 'done', ...result });
         });
 
         // Phase 6: Check for api.registerCron availability
