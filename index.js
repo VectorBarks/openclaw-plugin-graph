@@ -168,11 +168,11 @@ module.exports = {
         }
 
         // -----------------------------------------------------------------
-        // HOOK: before_agent_start — Extract entities from query, run search
+        // HOOK: before_prompt_build — Extract entities from query, run search
         // -----------------------------------------------------------------
         // Priority 8: after stability (5) and contemplation (7), before continuity (10).
 
-        api.on('before_agent_start', async (event, ctx) => {
+        api.on('before_prompt_build', async (event, ctx) => {
             const state = getState(ctx.agentId);
 
             // Phase 4: Lazy archive backfill — run on first conversation
