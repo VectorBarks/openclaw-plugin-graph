@@ -274,7 +274,7 @@ module.exports = {
             }
 
             if (contextLines.length > 0) {
-                return { prependContext: contextLines.join('\n') };
+                return { appendContext: contextLines.join('\n') };
             }
             return {};
         }, { priority: 8 });
